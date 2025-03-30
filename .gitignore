@@ -1,0 +1,6 @@
+*.zip
+data
+database
+*.ipynb*
+*.DS_Store
+*pycache*
