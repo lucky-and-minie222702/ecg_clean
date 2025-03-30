@@ -26,6 +26,7 @@ class SEBlock(nn.Module):
 
     def forward(self, x):
         shape = x.size()
+        # batch_size, channels 
         b, c = shape[:2:]
         w = self.pool(x).view(b, c)
         w = self.fc(w).view(b, c, 1)
