@@ -4,9 +4,26 @@ from os import path
 from scipy import signal
 from scipy.stats import norm
 from typing import *
+import wfdb
+import ast
 
-class Signal:
-    
+
+class EcgDataLoader:
+
+    def __init__(self, folder):
+        self.folder = folder
+        self.Y = pd.read_csv(path.join(self.folder, 'ptbxl_database.csv'), index_col = 'ecg_id')
+        self.Y.scp_codes = self.Y.scp_codes.apply(lambda x: ast.literal_eval(x))
+        
+    def load_raw_data(self, start = None, end = None):
+        df = self.Y[start:end]
+        data = [wfdb.rdsamp(path.join(self.folder, f)) for f in df.filename_hr]
+        data = np.array([signal for signal, meta in data])
+        return data
+
+
+class MySignal:
+
     def highpass(sig, cutoff, fs, order):
         nyq = 0.5 * fs
         normal_cutoff = cutoff / nyq
@@ -33,8 +50,8 @@ class Signal:
     
 
     def clean_ecg(sig):
-        sig = Signal.bandpass(sig, 0.5, 40, 500, 4)
-        sig = Signal.notch_filter(sig, 50, 500, 30)
+        sig = MySignal.bandpass(sig, 0.5, 40, 500, 4)
+        sig = MySignal.notch_filter(sig, 50, 500, 30)
         return sig
     
 
