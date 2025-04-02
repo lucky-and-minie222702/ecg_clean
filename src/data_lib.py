@@ -30,8 +30,8 @@ class MySignal:
         return signal.filtfilt(b, a, sig)
     
     def clean_ecg(sig):
-        sig = MySignal.bandpass(sig, 0.5, 40, 500, 4)
-        sig = MySignal.notch_filter(sig, 50, 500, 30)
+        sig -= signal.medfilt(sig, 201)  # baseline removal
+        sig = MySignal.lowpass(sig, 40, 500, 4)
         return sig
     
 class EcgDataLoader:
