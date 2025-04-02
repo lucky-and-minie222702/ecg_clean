@@ -7,9 +7,34 @@ from typing import *
 import wfdb
 import ast
 
-
+class MySignal:
+    def highpass(sig, cutoff, fs, order):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
+        return signal.filtfilt(b, a, sig)
+    
+    def lowpass(sig, cutoff, fs, order):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
+        return signal.filtfilt(b, a, sig)
+        	
+    def bandpass(sig, lowcut, highcut, fs, order):
+        nyq = 0.5 * fs
+        b, a = signal.butter(order, [lowcut / nyq, highcut / nyq], btype='band')
+        return signal.filtfilt(b, a, sig)
+    
+    def notch_filter(sig, freq, fs, Q):
+        b, a = signal.iirnotch(freq / (fs / 2), Q)
+        return signal.filtfilt(b, a, sig)
+    
+    def clean_ecg(sig):
+        sig = MySignal.bandpass(sig, 0.5, 40, 500, 4)
+        sig = MySignal.notch_filter(sig, 50, 500, 30)
+        return sig
+    
 class EcgDataLoader:
-
     def __init__(self, folder):
         self.folder = folder
         self.Y = pd.read_csv(path.join(self.folder, 'ptbxl_database.csv'), index_col = 'ecg_id')
@@ -20,41 +45,7 @@ class EcgDataLoader:
         data = [wfdb.rdsamp(path.join(self.folder, f)) for f in df.filename_hr]
         data = np.array([signal for signal, meta in data])
         return data
-
-
-class MySignal:
-
-    def highpass(sig, cutoff, fs, order):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
-        return signal.filtfilt(b, a, sig)
     
-
-    def lowpass(sig, cutoff, fs, order):
-        nyq = 0.5 * fs
-        normal_cutoff = cutoff / nyq
-        b, a = signal.butter(order, normal_cutoff, btype='low', analog=False)
-        return signal.filtfilt(b, a, sig)
-        	
-
-    def bandpass(sig, lowcut, highcut, fs, order):
-        nyq = 0.5 * fs
-        b, a = signal.butter(order, [lowcut / nyq, highcut / nyq], btype='band')
-        return signal.filtfilt(b, a, sig)
-    
-
-    def notch_filter(sig, freq, fs, Q):
-        b, a = signal.iirnotch(freq / (fs / 2), Q)
-        return signal.filtfilt(b, a, sig)
-    
-
-    def clean_ecg(sig):
-        sig = MySignal.bandpass(sig, 0.5, 40, 500, 4)
-        sig = MySignal.notch_filter(sig, 50, 500, 30)
-        return sig
-    
-
 def pad_or_crop(x, target_len):
     x = np.asarray(x)
     current_len = len(x)
@@ -68,9 +59,7 @@ def pad_or_crop(x, target_len):
         # crop
         return x[:target_len]
 
-
 class NoiseGen:
-    
     def generate_waveform(
             wave_type = 'sine', 
             amplitude = 1.0, 
@@ -90,37 +79,6 @@ class NoiseGen:
             raise ValueError("wave_type must be 'sine' or 'cosine'")
         
         return t, y
-
-    
+  
     def generate_noise(std, mean = 0.0):
         return np.random.normal(mean, std)
-
-
-class ECGGen:
-    
-    def skewed_gaussian(t, mu, sigma, alpha):
-        # time, center, width, skewness
-        phi = norm.pdf((t - mu) / sigma)
-        Phi = norm.cdf(alpha * (t - mu) / sigma)
-        return 2 * phi * Phi
-
-
-    def generate_beat(t, offset, config, noise = None, modify_noise = False):
-        y = np.zeros_like(t)
-        beat_duration = config[0]
-
-        # scale 0 -> 1 (percentage)
-        t_rel = np.linspace(0, 1, np.sum((t >= offset) & (t < offset + beat_duration)), endpoint = False)
-
-        # mu, sigma need to between 0 - 1
-        beat = config[1] * ECGGen.skewed_gaussian(
-            t_rel, mu = config[2], sigma = [3], alpha = config[4]
-        )
-        
-        mask = (t >= offset) & (t < offset + beat_duration)
-        if noise is not None:
-            if modify_noise:
-                noise = pad_or_crop(noise, len(beat))
-            beat += noise
-        y[mask] = beat
-        return y

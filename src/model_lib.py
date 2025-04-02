@@ -15,6 +15,11 @@ from torch.utils.data import DataLoader, random_split, TensorDataset
 # em = embedding
 # pool = pooling
 
+def get_padding(kernel_size, stride = 2, dilation = 1):
+    effective_kernel = dilation * (kernel_size - 1) + 1
+    padding = (stride - 1 + effective_kernel - 1) // 2
+    return padding
+
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction_ratio=4):
         super(SEBlock, self).__init__()
@@ -36,7 +41,6 @@ class SEBlock(nn.Module):
 
 
 class EfficientNetBlock(nn.Module):
-    
     def __init__(self, in_channels, out_channels, kernel_size, expansion_ratio, use_residual = True, se_reduction_ratio = 4, downsample = False):
         super(EfficientNetBlock, self).__init__()
         mid_channels = in_channels * expansion_ratio
@@ -48,7 +52,6 @@ class EfficientNetBlock(nn.Module):
             
         layers = []
         if expansion_ratio > 1:
-            # shallow normal conv
             layers.extend([
                 nn.Conv1d(in_channels, mid_channels, 1, padding = "same", bias = False),
                 nn.BatchNorm1d(mid_channels),
@@ -57,7 +60,7 @@ class EfficientNetBlock(nn.Module):
 
         layers.extend([
             # depthwise conv
-            nn.Conv1d(mid_channels, mid_channels, kernel_size, stride = stride, bias = False, groups = mid_channels, padding = "same" if stride == 1 else "valid"),
+            nn.Conv1d(mid_channels, mid_channels, kernel_size, stride = stride, bias = False, groups = mid_channels, padding = get_padding(kernel_size, stride)),
             nn.BatchNorm1d(mid_channels),
             nn.SiLU(inplace=True),
             # squeeze and excite
@@ -71,15 +74,62 @@ class EfficientNetBlock(nn.Module):
         self.main_conv = nn.Sequential(*layers)
         
         # project to match output
-        self.p_conv = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, kernel_size, stride = stride, bias = False, padding = "same" if stride == 1 else "valid"),
-        )
+        self.p_conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride = stride, bias = False, padding = get_padding(kernel_size, stride))
+
         self.p_bn_act = nn.Sequential(
             nn.BatchNorm1d(out_channels),
             nn.SiLU(),
         )
         
+    def forward(self, x):
+        identity = x
+        x = self.main_conv(x)
+        if self.use_residual:
+            # projection
+            identity = self.p_conv(identity)
+            identity = self.p_bn_act(identity)
+            return x + identity
+        return x
 
+
+class TransposeEfficientNetBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, expansion_ratio, use_residual = True, se_reduction_ratio = 4):
+        super(TransposeEfficientNetBlock, self).__init__()
+        mid_channels = in_channels * expansion_ratio
+        self.use_residual = use_residual
+            
+        layers = []
+        if expansion_ratio > 1:
+            # shallow normal conv
+            layers.extend([
+                nn.Conv1d(in_channels, mid_channels, 1, padding = "same", bias = False),
+                nn.BatchNorm1d(mid_channels),
+                nn.SiLU(inplace=True),
+            ])
+
+        layers.extend([
+            # depthwise conv
+            nn.ConvTranspose1d(mid_channels, mid_channels, kernel_size, stride = 2, bias = False, groups = mid_channels, padding = get_padding(kernel_size, 2)),
+            nn.BatchNorm1d(mid_channels),
+            nn.SiLU(inplace=True),
+            # squeeze and excite
+            SEBlock(mid_channels, reduction_ratio = se_reduction_ratio),
+            # connection + projection conv
+            nn.Conv1d(mid_channels, out_channels, 1, padding = "same", bias = False),
+            nn.BatchNorm1d(out_channels),
+            nn.SiLU(inplace=True),
+        ])
+        
+        self.main_conv = nn.Sequential(*layers)
+        
+        # project to match output
+        self.p_conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride = 2, bias = False, padding = get_padding(kernel_size, 2))
+
+        self.p_bn_act = nn.Sequential(
+            nn.BatchNorm1d(out_channels),
+            nn.SiLU(),
+        )
+        
     def forward(self, x):
         identity = x
         x = self.main_conv(x)
@@ -92,57 +142,67 @@ class EfficientNetBlock(nn.Module):
 
         
 class FusedENetBlock(nn.Module):
-    
-    def __init__(self, in_channels, out_channels, kernel_size, expansion_ratio, downsample = False):
+    def __init__(self, in_channels, out_channels, kernel_size, expansion_ratio, use_residual, downsample = False):
         super(FusedENetBlock, self).__init__()
         mid_channels = in_channels * expansion_ratio
+        self.use_residual = use_residual
         stride = 1
         if downsample:
             stride = 2
 
-        self.block = nn.Sequential(
-            nn.Conv1d(in_channels, mid_channels, kernel_size, stride = stride, bias = False, padding = "same" if stride == 1 else "valid"),
+        layers = [
+            nn.Conv1d(in_channels, mid_channels, kernel_size, stride = stride, bias = False, padding = get_padding(kernel_size, stride)),
             nn.BatchNorm1d(mid_channels),
             nn.SiLU(),
-            nn.Conv1d(mid_channels, out_channels, kernel_size = 1, padding = "same", bias = False),
-        )
+        ]
+        if expansion_ratio > 1:
+            layers.append(nn.Conv1d(mid_channels, out_channels, kernel_size = 1, padding = "same", bias = False))
+
+        self.blocks = nn.Sequential(*layers)
         
         self.bn_act = nn.Sequential(
             nn.BatchNorm1d(out_channels),
             nn.SiLU()
         )
-
-        self.use_residual = (stride == 1 and in_channels == out_channels)
         
-
-
+        # projection
+        self.proj = nn.Conv1d(in_channels, out_channels, 1 if not downsample else kernel_size, stride = stride, padding = get_padding(kernel_size, stride))
+        
     def forward(self, x):
-        out = self.block(x)
+        out = self.blocks(x)
         if self.use_residual:
-            out += x
+            out += self.proj(x)
             out = self.bn_act(out)
             return out
         return out
-        
-        
-    
-class CosineContrastiveLoss(nn.Module):
-    
-    def __init__(self, temperature):
-        super().__init__()
-        self.temperature = temperature
-        
 
-    def forward(self, output1, output2):
-        batch_size = output1.shape[0]
+class Visualization:
+    def format_number_short(n):
+        if n < 1_000:
+            return str(n)
+        elif n < 1_000_000:
+            return f"{n / 1_000:.1f}k".rstrip('0').rstrip('.')
+        elif n < 1_000_000_000:
+            return f"{n / 1_000_000:.1f}m".rstrip('0').rstrip('.')
+        elif n < 1_000_000_000_000:
+            return f"{n / 1_000_000_000:.1f}b".rstrip('0').rstrip('.')
+        else:
+            return f"{n / 1_000_000_000_000:.1f}t".rstrip('0').rstrip('.')
         
-        cos_sim = F.cosine_similarity(output1, output2) 
-        # temperature
-        cos_sim /= self.temperature
-        # softmax normalized
-        cos_sim = F.softmax(cos_sim)
+    def convert_bytes(byte_size: int) -> str:
+        units = ["bytes", "KB", "MB", "GB", "TB", "PB", "EB"]
+        size = byte_size
+        unit_index = 0
+        while size >= 1024 and unit_index < len(units) - 1:
+            size /= 1024
+            unit_index += 1
+        return f"{size:.2f} {units[unit_index]}"
         
-        label = torch.arange(batch_size)
-        loss = F.cross_entropy(cos_sim, label)
-        
-        return loss.mean()
+    def count_param(model):
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        return total, trainable
+
+    def show_param(model):
+        total, trainable = Visualization.count_param(model)
+        print(f"Total: {Visualization.format_number_short(total)}, trainable: {Visualization.format_number_short(trainable)}")

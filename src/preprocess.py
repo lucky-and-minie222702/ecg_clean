@@ -10,8 +10,8 @@ ecgs = np.transpose(ecgs, (0, 2, 1))
 ecgs = ecgs.reshape(-1, 5000)
 
 ecgs = np.array([
-    Signal.clean_ecg(e) 
+    MySignal.clean_ecg(e) 
     for e in ecgs
 ])
-ecgs = ecgs
+ecgs = ecgs.astype(np.float32)
 np.save(path.join("data", "ecgs"), ecgs)

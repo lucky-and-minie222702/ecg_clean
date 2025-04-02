@@ -4,3 +4,4 @@ database
 *.ipynb*
 *.DS_Store
 *pycache*
+*test*
